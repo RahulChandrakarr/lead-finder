@@ -1,4 +1,4 @@
-import { sendBatch } from "@/lib/mailer";
+import { sendBatch, syncReplies } from "@/lib/mailer";
 import { syncRunningJobs } from "@/lib/apify";
 
 // Hit this on a schedule (e.g. every 10 minutes) to drip-send campaigns and import finished scrapes:
@@ -11,5 +11,6 @@ export async function GET(request: Request) {
 
   const jobsSynced = await syncRunningJobs();
   const mail = await sendBatch();
-  return Response.json({ jobsSynced, ...mail });
+  const replies = await syncReplies().catch((e: unknown) => ({ error: e instanceof Error ? e.message : String(e) }));
+  return Response.json({ jobsSynced, ...mail, replies });
 }

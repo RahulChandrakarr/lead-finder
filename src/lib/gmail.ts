@@ -5,7 +5,13 @@ import { decrypt, encrypt } from "./crypto";
 import { query } from "./db";
 
 // Gmail / Google Workspace sending via OAuth + Gmail API (scope: gmail.send only).
-const SCOPES = ["openid", "email", "profile", "https://www.googleapis.com/auth/gmail.send"];
+const SCOPES = [
+  "openid",
+  "email",
+  "profile",
+  "https://www.googleapis.com/auth/gmail.send",
+  "https://www.googleapis.com/auth/gmail.readonly",
+];
 
 function creds() {
   const id = process.env.GOOGLE_CLIENT_ID;
@@ -53,6 +59,7 @@ async function tokenRequest(body: Record<string, string>) {
 export async function connectAccount(code: string) {
   const tokens = await tokenRequest({ code, grant_type: "authorization_code", redirect_uri: redirectUri() });
   if (!tokens.scope.includes("gmail.send")) throw new Error("Gmail send permission was not granted — tick the checkbox on the consent screen.");
+  if (!tokens.scope.includes("gmail.readonly")) throw new Error("Reply tracking was not granted. Reconnect and allow viewing your email.");
   if (!tokens.refresh_token) throw new Error("Google did not return a refresh token. Remove the app at myaccount.google.com/permissions and try again.");
 
   const res = await fetch("https://openidconnect.googleapis.com/v1/userinfo", {
@@ -95,4 +102,31 @@ export async function sendViaGmail(account: MailAccount, message: Mail.Options) 
   const json = await res.json();
   if (!res.ok) throw new Error(`Gmail API ${res.status}: ${json.error?.message ?? JSON.stringify(json)}`);
   return json as { id: string; threadId: string };
+}
+
+function fromAddress(header: string) {
+  const match = header.match(/<([^>]+)>/);
+  return (match ? match[1] : header).trim().toLowerCase();
+}
+
+/** Whether a sent thread has a reply or a bounce. Needs the gmail.readonly scope. */
+export async function classifyThread(account: MailAccount, threadId: string): Promise<"reply" | "bounce" | "none"> {
+  const url = new URL(`https://gmail.googleapis.com/gmail/v1/users/me/threads/${encodeURIComponent(threadId)}`);
+  url.searchParams.set("format", "metadata");
+  url.searchParams.append("metadataHeaders", "From");
+  const res = await fetch(url, {
+    headers: { Authorization: `Bearer ${await accessToken(account)}` },
+    cache: "no-store",
+  });
+  const json = await res.json();
+  if (!res.ok) {
+    if (res.status === 403) throw new Error("Reconnect Gmail and allow viewing email so replies can be tracked.");
+    throw new Error(`Gmail API ${res.status}: ${json.error?.message ?? JSON.stringify(json)}`);
+  }
+  const messages = (json.messages ?? []) as { payload?: { headers?: { name: string; value: string }[] } }[];
+  const others = messages
+    .map((m) => fromAddress(m.payload?.headers?.find((h) => h.name.toLowerCase() === "from")?.value ?? ""))
+    .filter((addr) => addr && addr !== account.email.toLowerCase());
+  if (others.some((addr) => addr.includes("mailer-daemon") || addr.includes("postmaster"))) return "bounce";
+  return others.length ? "reply" : "none";
 }

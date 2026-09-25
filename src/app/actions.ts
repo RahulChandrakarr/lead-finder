@@ -5,7 +5,8 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { query } from "@/lib/db";
 import { startScrape, syncRunningJobs } from "@/lib/apify";
-import { deliver, sendBatch } from "@/lib/mailer";
+import { crawlCampaign } from "@/lib/crawl";
+import { deliver, sendBatch, syncReplies } from "@/lib/mailer";
 import type { MailAccount } from "@/lib/gmail";
 import { leadWhere, LEAD_STATUSES, type LeadFilters } from "@/lib/leads";
 import { COUNTRIES, findCategory } from "@/lib/taxonomy";
@@ -133,6 +134,46 @@ export async function retryFailed(id: string) {
   );
   await query(`update campaigns set status = 'paused' where id = $1 and status = 'done'`, [id]);
   revalidatePath(`/campaigns/${id}`);
+}
+
+export async function crawlCampaignAction(id: string) {
+  let dest: string;
+  try {
+    const r = await crawlCampaign(id);
+    dest = `/campaigns/${id}?crawled=${r.crawled}&renamed=${r.renamed}`;
+  } catch (e) {
+    dest = `/campaigns/${id}?error=${encodeURIComponent(e instanceof Error ? e.message : String(e))}`;
+  }
+  revalidatePath(`/campaigns/${id}`);
+  revalidatePath("/leads");
+  redirect(dest);
+}
+
+export async function checkRepliesAction(returnTo: string) {
+  let dest: string;
+  try {
+    const r = await syncReplies();
+    dest = `${returnTo}?replies=${r.replied}&checked=${r.checked}`;
+  } catch (e) {
+    dest = `${returnTo}?error=${encodeURIComponent(e instanceof Error ? e.message : String(e))}`;
+  }
+  revalidatePath("/campaigns", "layout");
+  revalidatePath("/leads");
+  revalidatePath("/replies");
+  redirect(dest);
+}
+
+export async function addNotifyEmail(_: ActionState, fd: FormData): Promise<ActionState> {
+  const email = str(fd, "email").toLowerCase();
+  if (!/^\S+@\S+\.\S+$/.test(email)) return { error: "Enter a valid email address." };
+  await query(`insert into notify_emails (email) values ($1) on conflict do nothing`, [email]);
+  revalidatePath("/settings");
+  return { ok: `${email} will be notified when a lead replies.` };
+}
+
+export async function removeNotifyEmail(email: string) {
+  await query(`delete from notify_emails where email = $1`, [email]);
+  revalidatePath("/settings");
 }
 
 export async function sendNowAction(): Promise<ActionState> {

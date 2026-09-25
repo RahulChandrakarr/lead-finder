@@ -1,6 +1,6 @@
 import { query } from "@/lib/db";
 import { googleConfigured, redirectUri } from "@/lib/gmail";
-import { disconnectAccount, sendTestEmail, updateAccountLimit } from "@/app/actions";
+import { addNotifyEmail, disconnectAccount, removeNotifyEmail, sendTestEmail, updateAccountLimit } from "@/app/actions";
 import { FormAction } from "@/app/components/FormAction";
 
 type Account = { id: string; email: string; from_name: string | null; daily_limit: number; sent24h: number; created_at: Date };
@@ -13,6 +13,7 @@ export default async function SettingsPage({ searchParams }: PageProps<"/setting
               where r.account_id = a.id and r.status = 'sent' and r.sent_at > now() - interval '24 hours') as sent24h
      from mail_accounts a order by a.id`,
   );
+  const notify = await query<{ email: string }>(`select email from notify_emails order by email`);
   const ready = googleConfigured() && Boolean(process.env.ENCRYPTION_KEY);
   const smtp = Boolean(process.env.SMTP_HOST);
 
@@ -22,7 +23,7 @@ export default async function SettingsPage({ searchParams }: PageProps<"/setting
         <div>
           <h1 className="text-2xl font-semibold">Mail accounts</h1>
           <p className="text-sm text-zinc-500">
-            Connect Gmail or Google Workspace addresses to send campaigns from. Emails appear in each account’s Sent folder and replies land in its inbox.
+            Connect Gmail or Google Workspace addresses to send campaigns from. Emails appear in each account’s Sent folder. Reconnect once so the app can see replies and mark those leads as replied.
           </p>
         </div>
         {ready && <a href="/api/google/connect" className="btn">+ Connect Gmail</a>}
@@ -78,6 +79,30 @@ export default async function SettingsPage({ searchParams }: PageProps<"/setting
         Google’s caps: ~500/day for personal Gmail, ~2,000/day for Workspace. For cold outreach stay well below (start at 30–50/day per new account and ramp up).
         Disconnecting pauses that account’s active campaigns.
       </p>
+
+      <section className="card space-y-3">
+        <div>
+          <h2 className="font-medium">Reply alerts</h2>
+          <p className="text-sm text-zinc-500">
+            When a lead replies, these addresses get an email from the connected Gmail account. A free Gmail account is enough.
+          </p>
+        </div>
+        <FormAction action={addNotifyEmail} className="flex flex-wrap gap-2">
+          <input name="email" type="email" placeholder="teammate@company.com" className="input w-72" required />
+          <button className="btn">Add</button>
+        </FormAction>
+        <ul className="space-y-1 text-sm">
+          {notify.map((n) => (
+            <li key={n.email} className="flex items-center justify-between gap-3">
+              <span>{n.email}</span>
+              <form action={removeNotifyEmail.bind(null, n.email)}>
+                <button className="text-xs text-zinc-400 hover:text-red-600">Remove</button>
+              </form>
+            </li>
+          ))}
+          {notify.length === 0 && <li className="text-zinc-500">No one is notified yet.</li>}
+        </ul>
+      </section>
 
       {(accounts.length > 0 || smtp) && (
         <section className="card">

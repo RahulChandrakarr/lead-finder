@@ -2,12 +2,14 @@ import "server-only";
 import nodemailer, { type Transporter } from "nodemailer";
 import { pool, query } from "./db";
 import { countryName } from "./taxonomy";
-import { sendViaGmail, type MailAccount } from "./gmail";
+import { rememberBusinessName } from "./crawl";
+import { classifyThread, sendViaGmail, type MailAccount } from "./gmail";
 
 export const PLACEHOLDERS = ["business_name", "category", "city", "country", "website"] as const;
 
 type LeadFields = {
   name: string;
+  site_name?: string | null;
   category: string | null;
   city: string | null;
   country: string | null;
@@ -16,7 +18,7 @@ type LeadFields = {
 
 export function renderTemplate(text: string, lead: LeadFields) {
   const values: Record<string, string> = {
-    business_name: lead.name,
+    business_name: lead.site_name || lead.name,
     category: lead.category ?? "",
     city: lead.city ?? "",
     country: countryName(lead.country),
@@ -51,6 +53,8 @@ export async function sentInLast24h() {
 
 type Claimed = LeadFields & {
   id: string;
+  lead_id: string;
+  crawled_at: Date | null;
   email: string;
   token: string;
   campaign_id: string;
@@ -125,7 +129,7 @@ export async function sendBatch() {
        returning *
      )
      select cl.id, cl.email, cl.token, cl.campaign_id, c.account_id, t.subject, t.body,
-            l.name, l.category, l.city, l.country, l.website
+            l.id as lead_id, l.name, l.site_name, l.crawled_at, l.category, l.city, l.country, l.website
      from claimed cl
      join campaigns c on c.id = cl.campaign_id
      join templates t on t.id = c.template_id
@@ -149,6 +153,9 @@ export async function sendBatch() {
     }
 
     try {
+      if (!r.crawled_at) {
+        r.site_name = await rememberBusinessName({ id: r.lead_id, name: r.name, website: r.website });
+      }
       const res = await deliver(account, buildMessage(r));
       if (account) account.remaining--;
       await query(
@@ -178,6 +185,84 @@ export async function sendBatch() {
 
   const reason = rows.length ? undefined : exhausted.length ? "nothing pending or sender daily limit reached" : "nothing pending";
   return { sent, failed, skipped, reason };
+}
+
+/** Checks sent threads for a reply or bounce and updates the lead status. */
+export async function syncReplies() {
+  const rows = await query<MailAccount & { recipient_id: string; thread_id: string; lead_id: string }>(
+    `select r.id as recipient_id, r.thread_id, r.lead_id,
+            a.id, a.email, a.from_name, a.refresh_token_enc, a.daily_limit
+     from campaign_recipients r
+     join mail_accounts a on a.id = r.account_id
+     where r.status = 'sent' and r.thread_id is not null and r.replied_at is null
+       and coalesce(r.error, '') <> 'bounced'
+     order by r.sent_at desc
+     limit 40`,
+  );
+
+  let replied = 0, bounced = 0;
+  for (const row of rows) {
+    const kind = await classifyThread(row, row.thread_id);
+    if (kind === "reply") {
+      await query(`update campaign_recipients set replied_at = now() where id = $1`, [row.recipient_id]);
+      await query(
+        `update leads set status = 'replied', updated_at = now() where id = $1 and status <> 'unsubscribed'`,
+        [row.lead_id],
+      );
+      replied++;
+    } else if (kind === "bounce") {
+      await query(`update campaign_recipients set error = 'bounced' where id = $1`, [row.recipient_id]);
+      await query(
+        `update leads set status = 'bounced', updated_at = now() where id = $1 and status <> 'unsubscribed'`,
+        [row.lead_id],
+      );
+      bounced++;
+    }
+  }
+  const notified = await notifyPendingReplies();
+  return { checked: rows.length, replied, bounced, notified };
+}
+
+/** Emails the team once for each new reply, using the connected Gmail account. */
+async function notifyPendingReplies() {
+  const targets = await query<{ email: string }>(`select email from notify_emails order by email`);
+  if (!targets.length) return 0;
+  const rows = await query<MailAccount & { recipient_id: string; lead_email: string; lead_name: string }>(
+    `select r.id as recipient_id, r.email as lead_email, coalesce(l.site_name, l.name) as lead_name,
+            a.id, a.email, a.from_name, a.refresh_token_enc, a.daily_limit
+     from campaign_recipients r
+     join leads l on l.id = r.lead_id
+     join mail_accounts a on a.id = r.account_id
+     where r.replied_at is not null and r.reply_notified_at is null
+     order by r.replied_at
+     limit 20`,
+  );
+  const appUrl = process.env.APP_URL ?? "http://localhost:3000";
+  let notified = 0;
+  for (const row of rows) {
+    let delivered = false;
+    for (const target of targets) {
+      try {
+        await deliver(row, {
+          to: target.email,
+          subject: `Reply from ${row.lead_name}`,
+          text: `${row.lead_name} (${row.lead_email}) replied to your outreach.\n\n${appUrl}/replies`,
+          html:
+            `<p><b>${escapeHtml(row.lead_name)}</b> (${escapeHtml(row.lead_email)}) replied to your outreach.</p>` +
+            `<p><a href="${appUrl}/replies">Open replies</a></p>`,
+          headers: {},
+        });
+        delivered = true;
+      } catch {
+        // Keep trying the other team addresses.
+      }
+    }
+    if (delivered) {
+      await query(`update campaign_recipients set reply_notified_at = now() where id = $1`, [row.recipient_id]);
+      notified++;
+    }
+  }
+  return notified;
 }
 
 /** Adds the token's email to the suppression list and cancels its pending sends. */

@@ -93,3 +93,12 @@ alter table campaigns           add column if not exists account_id bigint refer
 alter table campaign_recipients add column if not exists account_id bigint references mail_accounts(id) on delete set null;
 alter table campaign_recipients add column if not exists message_id text;
 alter table campaign_recipients add column if not exists thread_id  text;
+alter table campaign_recipients add column if not exists replied_at timestamptz;
+alter table campaign_recipients add column if not exists reply_notified_at timestamptz;
+
+create table if not exists notify_emails (
+  email      text primary key,
+  created_at timestamptz not null default now()
+);
+alter table leads add column if not exists site_name text;
+alter table leads add column if not exists crawled_at timestamptz;

@@ -2,12 +2,15 @@ import Link from "next/link";
 import { query } from "@/lib/db";
 import { leadWhere, pickFilters, LEAD_STATUSES } from "@/lib/leads";
 import { CATEGORY_GROUPS, REGIONS, countryName } from "@/lib/taxonomy";
+import { LeadMail } from "@/app/components/LeadMail";
 import { LeadStatusSelect } from "@/app/components/LeadStatusSelect";
 import { deleteLead } from "@/app/actions";
+import { renderTemplate } from "@/lib/mailer";
 
 type Lead = {
   id: string;
   name: string;
+  site_name: string | null;
   category: string | null;
   google_category: string | null;
   country: string;
@@ -33,6 +36,9 @@ export default async function LeadsPage({ searchParams }: PageProps<"/leads">) {
   const { where, values } = leadWhere(filters);
 
   const [{ total }] = await query<{ total: number }>(`select count(*)::int as total from leads l ${where}`, values);
+  const [template] = await query<{ subject: string; body: string }>(
+    `select t.subject, t.body from campaigns c join templates t on t.id = c.template_id order by c.id desc limit 1`,
+  );
   const leads = await query<Lead>(
     `select * from leads l ${where} order by l.id desc limit ${PAGE_SIZE} offset ${(page - 1) * PAGE_SIZE}`,
     values,
@@ -83,13 +89,14 @@ export default async function LeadsPage({ searchParams }: PageProps<"/leads">) {
       <div className="card overflow-x-auto p-0">
         <table className="table">
           <thead>
-            <tr><th>Business</th><th>Location</th><th>Contact</th><th>Rating</th><th>Status</th><th></th></tr>
+            <tr><th>Business</th><th>Location</th><th>Contact</th><th>Email</th><th>Rating</th><th>Status</th><th></th></tr>
           </thead>
           <tbody>
             {leads.map((l) => (
               <tr key={l.id}>
                 <td className="max-w-xs">
-                  <div className="font-medium">{l.name}</div>
+                  <div className="font-medium">{l.site_name || l.name}</div>
+                  {l.site_name && l.site_name !== l.name && <div className="text-xs text-zinc-400">Maps: {l.name}</div>}
                   <div className="text-xs text-zinc-500">{l.google_category ?? l.category}</div>
                   <div className="mt-1 flex gap-2 text-xs">
                     {l.maps_url && <a className="underline" href={l.maps_url} target="_blank">Maps</a>}
@@ -107,6 +114,12 @@ export default async function LeadsPage({ searchParams }: PageProps<"/leads">) {
                   {l.phone && <div>{l.phone}</div>}
                   {l.website && <a className="block max-w-[14rem] truncate text-zinc-500 underline" href={l.website} target="_blank">{l.website.replace(/^https?:\/\/(www\.)?/, "")}</a>}
                 </td>
+                <td>
+                  <LeadMail
+                    subject={template ? renderTemplate(template.subject, l) : ""}
+                    body={template ? renderTemplate(template.body, l) : ""}
+                  />
+                </td>
                 <td className="text-xs whitespace-nowrap">{l.rating ? `★ ${l.rating} (${l.reviews_count})` : "—"}</td>
                 <td><LeadStatusSelect id={l.id} status={l.status} /></td>
                 <td>
@@ -117,7 +130,7 @@ export default async function LeadsPage({ searchParams }: PageProps<"/leads">) {
               </tr>
             ))}
             {leads.length === 0 && (
-              <tr><td colSpan={6} className="py-8 text-center text-zinc-500">No leads match. <Link className="underline" href="/">Run a search</Link>.</td></tr>
+              <tr><td colSpan={7} className="py-8 text-center text-zinc-500">No leads match. <Link className="underline" href="/">Run a search</Link>.</td></tr>
             )}
           </tbody>
         </table>

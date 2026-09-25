@@ -4,7 +4,7 @@ import { query } from "@/lib/db";
 import { sentInLast24h } from "@/lib/mailer";
 import { CATEGORY_GROUPS, REGIONS } from "@/lib/taxonomy";
 import { LEAD_STATUSES } from "@/lib/leads";
-import { createCampaign } from "@/app/actions";
+import { checkRepliesAction, createCampaign } from "@/app/actions";
 import { FormAction } from "@/app/components/FormAction";
 import { SendNowButton } from "@/app/components/SendNowButton";
 
@@ -18,17 +18,20 @@ type Campaign = {
   sent: number;
   pending: number;
   failed: number;
+  replied: number;
   created_at: Date;
 };
 
-export default async function CampaignsPage() {
+export default async function CampaignsPage({ searchParams }: PageProps<"/campaigns">) {
   await connection();
+  const { replies, checked, error } = await searchParams;
   const campaigns = await query<Campaign>(
     `select c.id, c.name, c.status, c.created_at, t.name as template, a.email as sender,
             count(r.id)::int as total,
             count(r.id) filter (where r.status = 'sent')::int as sent,
             count(r.id) filter (where r.status in ('pending','sending'))::int as pending,
-            count(r.id) filter (where r.status = 'failed')::int as failed
+            count(r.id) filter (where r.status = 'failed')::int as failed,
+            count(r.id) filter (where r.replied_at is not null)::int as replied
      from campaigns c join templates t on t.id = c.template_id
      left join mail_accounts a on a.id = c.account_id
      left join campaign_recipients r on r.campaign_id = c.id
@@ -49,8 +52,17 @@ export default async function CampaignsPage() {
             Sent in last 24h: <b>{sent24h}</b> / {limit} daily limit. Active campaigns drip-send via <code>/api/cron/send</code>.
           </p>
         </div>
-        <SendNowButton />
+        <div className="flex flex-wrap items-center gap-2">
+          <SendNowButton />
+          <form action={checkRepliesAction.bind(null, "/campaigns")}><button className="btn-ghost">Check replies</button></form>
+        </div>
       </div>
+      {typeof error === "string" && <p className="card border-red-200 bg-red-50 text-sm text-red-700">{error}</p>}
+      {typeof replies === "string" && (
+        <p className="card border-green-200 bg-green-50 text-sm text-green-800">
+          Checked {checked} sent threads. {replies} new replies. Lead status is now “replied”.
+        </p>
+      )}
 
       <section className="card">
         <h2 className="mb-3 font-medium">New campaign</h2>
@@ -90,7 +102,7 @@ export default async function CampaignsPage() {
 
       <section className="card overflow-x-auto p-0">
         <table className="table">
-          <thead><tr><th>Campaign</th><th>Template</th><th>Sender</th><th>Status</th><th>Progress</th><th>Failed</th><th>Created</th></tr></thead>
+          <thead><tr><th>Campaign</th><th>Template</th><th>Sender</th><th>Status</th><th>Progress</th><th>Replied</th><th>Failed</th><th>Created</th></tr></thead>
           <tbody>
             {campaigns.map((c) => (
               <tr key={c.id}>
@@ -99,11 +111,12 @@ export default async function CampaignsPage() {
                 <td className="text-zinc-500">{c.sender ?? "SMTP"}</td>
                 <td><span className="pill">{c.status}</span></td>
                 <td>{c.sent} / {c.total} sent{c.pending ? ` · ${c.pending} queued` : ""}</td>
+                <td>{c.replied}</td>
                 <td className={c.failed ? "text-red-600" : ""}>{c.failed}</td>
                 <td className="text-zinc-500">{c.created_at.toLocaleDateString()}</td>
               </tr>
             ))}
-            {campaigns.length === 0 && <tr><td colSpan={7} className="py-8 text-center text-zinc-500">No campaigns yet.</td></tr>}
+            {campaigns.length === 0 && <tr><td colSpan={8} className="py-8 text-center text-zinc-500">No campaigns yet.</td></tr>}
           </tbody>
         </table>
       </section>

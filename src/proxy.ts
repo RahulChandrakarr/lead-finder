@@ -1,8 +1,12 @@
 import { NextResponse, type NextRequest } from "next/server";
+import { movedPath, movedTo } from "@/lib/moved";
 
 // Password-protects the dashboard with HTTP basic auth (any username, password = APP_PASSWORD).
 // Unsubscribe links and the cron endpoint are excluded in `config.matcher` below.
 export function proxy(request: NextRequest) {
+  const moved = movedTo();
+  if (moved) return NextResponse.redirect(`${moved}${movedPath(request.nextUrl.pathname)}`, 307);
+
   const password = process.env.APP_PASSWORD;
   if (!password) return new NextResponse("Set APP_PASSWORD in .env.local", { status: 500 });
 

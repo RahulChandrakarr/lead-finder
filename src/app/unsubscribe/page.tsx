@@ -1,13 +1,18 @@
+import { redirect } from "next/navigation";
 import { unsubscribeByToken } from "@/lib/mailer";
+import { movedTo } from "@/lib/moved";
 
 // Public page (excluded from auth in src/proxy.ts). Requires a click so link scanners don't unsubscribe people.
 export default async function UnsubscribePage({ searchParams }: PageProps<"/unsubscribe">) {
   const { t, done } = await searchParams;
   const token = typeof t === "string" ? t : "";
 
+  // Moved: RactroTech has the same tokens (copied with the data) and asks for the same click.
+  const moved = movedTo();
+  if (moved) redirect(`${moved}/unsubscribe?${new URLSearchParams(done ? { done: "1" } : { t: token })}`);
+
   async function confirm() {
     "use server";
-    const { redirect } = await import("next/navigation");
     await unsubscribeByToken(token);
     redirect(`/unsubscribe?done=1`);
   }

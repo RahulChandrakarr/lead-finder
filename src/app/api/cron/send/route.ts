@@ -1,9 +1,14 @@
 import { sendBatch, syncReplies } from "@/lib/mailer";
 import { syncRunningJobs } from "@/lib/apify";
+import { movedTo } from "@/lib/moved";
 
 // Hit this on a schedule (e.g. every 10 minutes) to drip-send campaigns and import finished scrapes:
 //   curl -H "Authorization: Bearer $CRON_SECRET" https://your-app/api/cron/send
 export async function GET(request: Request) {
+  // Moved: never send from here again; RactroTech's /api/outreach/cron does it now.
+  const moved = movedTo();
+  if (moved) return Response.json({ error: "moved", nothingSent: true, use: `${moved}/api/outreach/cron` }, { status: 410 });
+
   const secret = process.env.CRON_SECRET;
   const url = new URL(request.url);
   const given = request.headers.get("authorization")?.replace(/^Bearer /, "") ?? url.searchParams.get("secret");
